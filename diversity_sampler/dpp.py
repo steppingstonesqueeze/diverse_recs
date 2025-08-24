@@ -1,65 +1,89 @@
+# diversity_sampler/dpp.py
 from __future__ import annotations
 import numpy as np
 
-def k_dpp_sample(L: np.ndarray, k: int, eps: float=1e-12, seed: int=None):
-    """Sample a size-k subset from a DPP specified by PSD kernel L (L-ensemble, fixed-size k-DPP).
-    Uses eigen-decomposition and the standard k-DPP algorithm (Kulesza & Taskar).
-    For large n, prefer running this on a reduced candidate pool.
+def _select_k_eigenvectors(lmbda: np.ndarray, k: int, rng: np.random.Generator):
+    n = len(lmbda)
+    E = np.zeros((k + 1, n), dtype=float)
+    E[0, :] = 1.0
+    for i in range(n):
+        li = lmbda[i]
+        jmax = min(i + 1, k)
+        for j in range(jmax, 0, -1):
+            prev = E[j, i - 1] if i > 0 else 0.0
+            base = E[j - 1, i - 1] if i > 0 else (1.0 if j == 1 else 0.0)
+            E[j, i] = prev + li * base
+
+    S = []
+    j = k
+    for i in range(n - 1, -1, -1):
+        if j == 0:
+            break
+        denom = E[j, i]
+        if denom <= 0:
+            continue
+        base = E[j - 1, i - 1] if i > 0 else (1.0 if j == 1 else 0.0)
+        prob = (lmbda[i] * base) / denom
+        if rng.random() < prob:
+            S.append(i)
+            j -= 1
+    S.reverse()
+    return S
+
+def k_dpp_sample(L: np.ndarray, k: int, eps: float = 1e-12, seed: int | None = None):
+    """
+    Sample a size-k subset from an L-ensemble DPP with PSD kernel L (n x n).
     """
     n = L.shape[0]
     if k <= 0:
         return []
     if k >= n:
         return list(range(n))
-    # Eigendecomposition
+
     vals, vecs = np.linalg.eigh(L)
-    vals = np.maximum(vals, 0.0)  # clip negatives from numerical error
-    # Select exactly k eigenvalues using elementary symmetric polynomials
-    E = np.zeros((k+1, len(vals)+1), dtype=float)
-    E[0, :] = 1.0
-    for i, l in enumerate(vals, start=1):
-        E[1:min(i,k)+1, i] = E[1:min(i,k)+1, i-1] + l * E[0:min(i-1,k), i-1]
-        E[0, i] = 1.0
-        for j in range(2, min(i, k)+1):
-            E[j, i] = E[j, i-1] + l * E[j-1, i-1]
-    # Select a subset of eigenvectors
+    vals = np.maximum(vals, 0.0)
     rng = np.random.default_rng(seed)
-    S = []
-    i = len(vals)
-    j = k
-    while j > 0:
-        if i == 0:
-            break
-        i -= 1
-        if E[j, i] == 0:
-            continue
-        prob = vals[i] * E[j-1, i] / E[j, i]
-        if rng.random() < prob:
-            S.append(i)
-            j -= 1
-    V = vecs[:, S]  # selected eigenvectors
-    # Sample items sequentially
+
+    # 1) pick exactly k eigenvectors
+    S_idx = _select_k_eigenvectors(vals, k, rng)
+    if len(S_idx) < k:
+        S_idx = list(np.argsort(vals)[-k:])
+
+    V = vecs[:, S_idx]  # (n x r) with r == k
+
+    # 2) sequentially pick items
     Y = []
     for _ in range(k):
-        # compute probabilities proportional to row norms of V^2
-        P = np.sum(V**2, axis=1)
-        if P.max() < eps:
+        # row norms squared -> selection probabilities over items
+        P_rows = np.sum(V * V, axis=1)
+        sP = P_rows.sum()
+        if sP <= eps:
             break
-        i = int(rng.choice(len(P), p=P/np.sum(P)))
+        i = int(rng.choice(n, p=P_rows / sP))
         Y.append(i)
-        # orthogonalize V against e_i
-        if V.ndim == 1 or V.shape[1] == 1:
+
+        # pick a column j with prob uc0u8733  V[i, j]^2
+        col_weights = V[i, :] ** 2
+        sC = col_weights.sum()
+        if sC <= eps:
             break
-        vi = V[i, :].copy()
-        vi_norm2 = np.dot(vi, vi)
-        if vi_norm2 <= eps:
+        j = int(rng.choice(V.shape[1], p=col_weights / sC))
+
+        # v = V[:, j] / V[i, j]
+        denom = V[i, j]
+        if abs(denom) <= eps:
             break
-        V = V - np.outer(V[:, :] @ vi, vi) / vi_norm2
-        # drop the component aligned with vi (reduce dimensionality)
-        # Re-orthogonalize via QR for stability
-        Q, R = np.linalg.qr(V)
-        V = Q[:, :max(0, V.shape[1]-1)]
-        if V.size == 0:
+        v = V[:, j] / denom  # shape (n,)
+
+        # Update: V <- V - v * V[i, :]
+        V = V - np.outer(v, V[i, :])  # (n x r) - (n x 1) @ (1 x r)
+
+        # Drop column j and re-orthonormalize
+        if V.shape[1] <= 1:
             break
-    # Deduplicate and trim
+        V = np.delete(V, j, axis=1)
+        Q, _ = np.linalg.qr(V)  # (n x (r-1))
+        V = Q
+
+    # Deduplicate in case of numerical repeats
     return list(dict.fromkeys(Y))[:k]

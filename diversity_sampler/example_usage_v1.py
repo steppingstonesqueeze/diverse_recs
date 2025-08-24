@@ -1,5 +1,9 @@
 import numpy as np
-from diversity_sampler import CandidatePool, PoolMode, select_diverse, SelectionObjective, build_kernel, k_dpp_sample, diversity_metrics
+from pool import *
+from kernels import *
+from metrics import *
+from selectors import *
+from dpp import *
 
 def demo():
     # Simulate a stream
@@ -24,8 +28,8 @@ def demo():
     print("Greedy facility-location metrics:", diversity_metrics(Xcand, sel_idxs))
 
     # 2B) k-DPP sampling on same candidates
-    k = 10
-    L = build_kernel(Xcand, quality=None, kind="cosine", alpha=1.0, jitter=1e-6)
+    k = 50
+    L = build_kernel(Xcand, quality=None, kind="cosine", alpha=0.9, jitter=1e-6)
     Y = k_dpp_sample(L, k=k, seed=0)
     print("k-DPP metrics:", diversity_metrics(Xcand, Y))
 
