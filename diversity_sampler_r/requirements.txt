@@ -1,0 +1,6 @@
+# R equivalent of numpy>=1.21
+# Core packages needed:
+# - base R (for matrix operations, linear algebra)
+# - stats (for random number generation)
+# - digest (for hashing functions)
+# - jsonlite (for JSON serialization) 
